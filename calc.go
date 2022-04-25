@@ -737,7 +737,14 @@ func (f *File) CalcCellValue(sheet, cell string) (result string, err error) {
 	var (
 		formula string
 		token   efp.Token
+		value string
 	)
+	if value, err = f.GetCellValue(sheet, cell); err != nil {
+		return
+	}
+	if value!=""{
+		return value,nil
+	}
 	if formula, err = f.GetCellFormula(sheet, cell); err != nil {
 		return
 	}
@@ -831,14 +838,12 @@ func (f *File) evalInfixExp(sheet, cell string, tokens []efp.Token) (efp.Token, 
 	opdStack, optStack, opfStack, opfdStack, opftStack, argsStack := NewStack(), NewStack(), NewStack(), NewStack(), NewStack(), NewStack()
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
-
 		// out of function stack
 		if opfStack.Len() == 0 {
 			if err = f.parseToken(sheet, token, opdStack, optStack); err != nil {
 				return efp.Token{}, err
 			}
 		}
-
 		// function start
 		if isFunctionStartToken(token) {
 			opfStack.Push(token)
@@ -1140,11 +1145,19 @@ func calcAdd(rOpd, lOpd efp.Token, opdStack *Stack) error {
 
 // calcSubtract evaluate subtraction arithmetic operations.
 func calcSubtract(rOpd, lOpd efp.Token, opdStack *Stack) error {
-	lOpdVal, err := strconv.ParseFloat(lOpd.TValue, 64)
+	lopdValue:=lOpd.TValue
+	if lOpd.TValue ==""{
+		lopdValue="0"
+	}
+	lOpdVal, err := strconv.ParseFloat(lopdValue, 64)
 	if err != nil {
 		return err
 	}
-	rOpdVal, err := strconv.ParseFloat(rOpd.TValue, 64)
+	ropdValue:=rOpd.TValue
+	if lOpd.TValue ==""{
+		ropdValue="0"
+	}
+	rOpdVal, err := strconv.ParseFloat(ropdValue, 64)
 	if err != nil {
 		return err
 	}
@@ -1193,6 +1206,9 @@ func calculate(opdStack *Stack, opt efp.Token) error {
 			return ErrInvalidFormula
 		}
 		opd := opdStack.Pop().(efp.Token)
+		if opd.TValue == ""{
+			opd.TValue="0"
+		}
 		opdVal, err := strconv.ParseFloat(opd.TValue, 64)
 		if err != nil {
 			return err
@@ -1206,6 +1222,12 @@ func calculate(opdStack *Stack, opt efp.Token) error {
 		}
 		rOpd := opdStack.Pop().(efp.Token)
 		lOpd := opdStack.Pop().(efp.Token)
+		if rOpd.TValue == ""{
+			rOpd.TValue="0"
+		}
+		if  lOpd.TValue == ""{
+			lOpd.TValue="0"
+		}
 		if err := calcSubtract(rOpd, lOpd, opdStack); err != nil {
 			return err
 		}
@@ -1230,6 +1252,12 @@ func calculate(opdStack *Stack, opt efp.Token) error {
 		}
 		rOpd := opdStack.Pop().(efp.Token)
 		lOpd := opdStack.Pop().(efp.Token)
+		if rOpd.TValue == ""{
+			rOpd.TValue="0"
+		}
+		if  lOpd.TValue == ""{
+			lOpd.TValue="0"
+		}
 		if rOpd.TSubType == efp.TokenSubTypeError {
 			return errors.New(rOpd.TValue)
 		}
@@ -1309,20 +1337,49 @@ func isOperand(token efp.Token) bool {
 func (f *File) parseToken(sheet string, token efp.Token, opdStack, optStack *Stack) error {
 	// parse reference: must reference at here
 	if token.TSubType == efp.TokenSubTypeRange {
-		refTo := f.getDefinedNameRefTo(token.TValue, sheet)
-		if refTo != "" {
-			token.TValue = refTo
-		}
-		result, err := f.parseReference(sheet, token.TValue)
-		if err != nil {
+		var value string
+		var err error
+		if value, err = f.GetCellValue(sheet, token.TValue, Options{RawCellValue: true}); err != nil {
 			return errors.New(formulaErrorNAME)
 		}
-		if result.Type != ArgString {
-			return errors.New(formulaErrorVALUE)
+		if value!=""{
+			token.TType = efp.TokenTypeOperand
+			token.TSubType = efp.TokenSubTypeNumber
+			token.TValue = value
+		}else{
+			refTo := f.getDefinedNameRefTo(token.TValue, sheet)
+			if refTo != "" {
+				token.TValue = refTo
+			}
+			formula,err:=f.GetCellFormula(sheet,token.TValue)
+			if err != nil {
+				return errors.New(formulaErrorNAME)
+			}
+			if formula != ""{
+				var value string
+				if value, err = f.GetCellValue(sheet, token.TValue, Options{RawCellValue: true}); err != nil {
+					return errors.New(formulaErrorNAME)
+				}
+				if value=="" {
+					if value, err = f.CalcCellValue(sheet, token.TValue); err != nil {
+						return errors.New(formulaErrorNAME)
+					}
+					f.SetCellValue(sheet,token.TValue,value)
+				}
+				token.TValue = value
+			}else{
+				result, err := f.parseReference(sheet, token.TValue)
+				if err != nil {
+					return errors.New(formulaErrorNAME)
+				}
+				if result.Type != ArgString {
+					return errors.New(formulaErrorVALUE)
+				}
+				token.TValue = result.String
+			}
+			token.TType = efp.TokenTypeOperand
+			token.TSubType = efp.TokenSubTypeNumber
 		}
-		token.TValue = result.String
-		token.TType = efp.TokenTypeOperand
-		token.TSubType = efp.TokenSubTypeNumber
 	}
 	if isOperatorPrefixToken(token) {
 		if err := f.parseOperatorPrefixToken(optStack, opdStack, token); err != nil {
@@ -1397,6 +1454,7 @@ func (f *File) parseReference(sheet, reference string) (arg formulaArg, err erro
 				}
 				cr.Col = TotalColumns
 			}
+
 			cellRanges.PushBack(cellRange{
 				From: cellRef{Sheet: sheet, Col: cr.Col, Row: 1},
 				To:   cellRef{Sheet: sheet, Col: cr.Col, Row: TotalRows},
@@ -1493,17 +1551,34 @@ func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, e
 		for row := valueRange[0]; row <= valueRange[1]; row++ {
 			var matrixRow []formulaArg
 			for col := valueRange[2]; col <= valueRange[3]; col++ {
-				var cell, value string
+				var cell, value,formula string
 				if cell, err = CoordinatesToCellName(col, row); err != nil {
 					return
 				}
-				if value, err = f.GetCellValue(sheet, cell, Options{RawCellValue: true}); err != nil {
+
+				if formula, err = f.GetCellFormula(sheet, cell); err != nil {
 					return
+				}
+				if formula!="" {
+					if value, err = f.GetCellValue(sheet, cell, Options{RawCellValue: true}); err != nil {
+						return
+					}
+					if !(value!="") {
+						if value, err = f.CalcCellValue(sheet, cell); err != nil {
+							return
+						}
+						f.SetCellValue(sheet, cell,value)
+					}
+				}else {
+					if value, err = f.GetCellValue(sheet, cell, Options{RawCellValue: true}); err != nil {
+						return
+					}
 				}
 				matrixRow = append(matrixRow, formulaArg{
 					String: value,
 					Type:   ArgString,
 				})
+
 			}
 			arg.Matrix = append(arg.Matrix, matrixRow)
 		}

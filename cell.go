@@ -55,6 +55,7 @@ var cellTypes = map[string]CellType{
 	"str":       CellTypeString,
 	"inlineStr": CellTypeString,
 }
+var cache=make(map[string]string)
 
 // GetCellValue provides a function to get formatted value from cell by given
 // worksheet name and axis in spreadsheet file. If it is possible to apply a
@@ -62,10 +63,16 @@ var cellTypes = map[string]CellType{
 // returned, along with the raw value of the cell. All cells' values will be
 // the same in a merged range.
 func (f *File) GetCellValue(sheet, axis string, opts ...Options) (string, error) {
-	return f.getCellStringFunc(sheet, axis, func(x *xlsxWorksheet, c *xlsxC) (string, bool, error) {
+	tmp:=cache[sheet+axis]
+	if tmp!=""{
+		return tmp,nil
+	}
+	value,err:=f.getCellStringFunc(sheet, axis, func(x *xlsxWorksheet, c *xlsxC) (string, bool, error) {
 		val, err := c.getValueFrom(f, f.sharedStringsReader(), parseOptions(opts...).RawCellValue)
 		return val, true, err
 	})
+	cache[sheet+axis]=value
+	return  value,err
 }
 
 // GetCellType provides a function to get the cell's data type by given
@@ -348,6 +355,7 @@ func (f *File) SetCellStr(sheet, axis, value string) error {
 	cellData.T, cellData.V, err = f.setCellString(value)
 	return err
 }
+
 
 // setCellString provides a function to set string type to shared string
 // table.
